@@ -83,7 +83,14 @@ class EDAService:
         graphs_metadata: List[Dict[str, Any]] = []
 
         numerical_columns = df.select_dtypes(include=[np.number]).columns
-        for col in numerical_columns:
+        numerical_cols = list(numerical_columns)
+        if numerical_cols:
+            variances = df[numerical_cols].var().sort_values(ascending=False)
+            top_numerical = list(variances.head(5).index)
+        else:
+            top_numerical = []
+
+        for col in top_numerical:
             hist_path = self.generate_histogram(df, col, dataset_id)
             box_path = self.generate_boxplot(df, col, dataset_id)
             graphs_metadata.append(
@@ -101,12 +108,19 @@ class EDAService:
                 )
 
         categorical_columns = df.select_dtypes(include=["object"]).columns
-        for col in categorical_columns:
-            if df[col].nunique() <= 50:
-                count_path = self.generate_countplot(df, col, dataset_id)
-                graphs_metadata.append(
-                    {"type": "countplot", "column": col, "file_path": count_path}
-                )
+        categorical_cols = list(categorical_columns)
+        useful_cats: List[str] = []
+        for col in categorical_cols:
+            unique = df[col].nunique()
+            if 1 < unique <= 50:
+                useful_cats.append(col)
+        useful_cats = useful_cats[:5]
+
+        for col in useful_cats:
+            count_path = self.generate_countplot(df, col, dataset_id)
+            graphs_metadata.append(
+                {"type": "countplot", "column": col, "file_path": count_path}
+            )
 
         summary_stats = {
             "shape": {"rows": int(df.shape[0]), "columns": int(df.shape[1])},

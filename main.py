@@ -12,6 +12,7 @@ from services.cleaner import DataCleaner
 from services.eda import EDAService
 from services.outliers import OutlierService
 from services.feature_engineering import FeatureEngineeringService
+from s3_client import upload_file_and_get_key, generate_presigned_url
 from database import (
     connect_db,
     disconnect_db,
@@ -121,11 +122,15 @@ async def process_dataset(dataset_id: str, df: pd.DataFrame):
         eda_results = eda_service.generate_all_eda(df_cleaned, dataset_id)
 
         for graph in eda_results["graphs"]:
+            local_path = graph["file_path"]
+            s3_key = f"graphs/{dataset_id}/{os.path.basename(local_path)}"
+            stored_key = upload_file_and_get_key(local_path, s3_key) or local_path
+
             await create_graph_metadata(
                 dataset_id=dataset_id,
                 graph_type=graph["type"],
                 column=graph.get("column"),
-                file_path=graph["file_path"],
+                file_path=stored_key,
             )
         
         outlier_service = OutlierService()
@@ -155,11 +160,15 @@ async def process_dataset(dataset_id: str, df: pd.DataFrame):
             )
         
         cleaned_path = data_loader.save_cleaned_dataset(df_final, dataset_id)
+
+        cleaned_s3_key = f"datasets/{dataset_id}/cleaned.csv"
+        cleaned_key = upload_file_and_get_key(cleaned_path, cleaned_s3_key)
         
         await update_dataset(
             dataset_id,
             status="completed",
-            cleanedDataPath=cleaned_path,
+            cleanedDataPath=None if cleaned_key else cleaned_path,
+            cleanedUrl=cleaned_key,
             rows=df_final.shape[0],
             columns=df_final.shape[1]
         )
@@ -210,8 +219,11 @@ async def upload_dataset(
         dataset_id = dataset.id
         
         raw_path = data_loader.save_raw_dataset(df, dataset_id)
-        
-        await update_dataset(dataset_id, rawDataPath=raw_path)
+        await update_dataset(
+            dataset_id,
+            rawDataPath=raw_path,
+            rawUrl=None,
+        )
         
         background_tasks.add_task(process_dataset, dataset_id, df)
         
@@ -231,18 +243,19 @@ async def get_raw_dataset(dataset_id: str):
     dataset = await get_dataset(dataset_id)
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
-    
-    if not dataset.rawDataPath:
-        raise HTTPException(status_code=404, detail="Raw dataset file not found")
-    
-    if not os.path.exists(dataset.rawDataPath):
-        raise HTTPException(status_code=404, detail="Raw dataset file does not exist")
-    
-    return FileResponse(
-        dataset.rawDataPath,
-        media_type="text/csv",
-        filename=f"{dataset_id}_raw.csv"
-    )
+    if dataset.rawDataPath and os.path.exists(dataset.rawDataPath):
+        return FileResponse(
+            dataset.rawDataPath,
+            media_type="text/csv",
+            filename=f"{dataset_id}_raw.csv"
+        )
+
+    if dataset.rawUrl:
+        url = generate_presigned_url(dataset.rawUrl)
+        if url:
+            return JSONResponse({"url": url})
+
+    raise HTTPException(status_code=404, detail="Raw dataset not available")
 
 
 @app.get("/dataset/{dataset_id}/cleaned")
@@ -257,17 +270,19 @@ async def get_cleaned_dataset(dataset_id: str):
             detail=f"Dataset processing not completed. Current status: {dataset.status}"
         )
     
-    if not dataset.cleanedDataPath:
-        raise HTTPException(status_code=404, detail="Cleaned dataset file not found")
-    
-    if not os.path.exists(dataset.cleanedDataPath):
-        raise HTTPException(status_code=404, detail="Cleaned dataset file does not exist")
-    
-    return FileResponse(
-        dataset.cleanedDataPath,
-        media_type="text/csv",
-        filename=f"{dataset_id}_cleaned.csv"
-    )
+    if dataset.cleanedDataPath and os.path.exists(dataset.cleanedDataPath):
+        return FileResponse(
+            dataset.cleanedDataPath,
+            media_type="text/csv",
+            filename=f"{dataset_id}_cleaned.csv"
+        )
+
+    if dataset.cleanedUrl:
+        url = generate_presigned_url(dataset.cleanedUrl)
+        if url:
+            return JSONResponse({"url": url})
+
+    raise HTTPException(status_code=404, detail="Cleaned dataset not available")
 
 
 @app.get("/dataset/{dataset_id}/eda/graphs", response_model=GraphsResponse)
@@ -298,12 +313,16 @@ async def get_graph_file(dataset_id: str, graph_id: str):
         raise HTTPException(status_code=404, detail="Graph not found")
 
     if not graph.filePath:
-        raise HTTPException(status_code=404, detail="Graph file path/URL not set")
+        raise HTTPException(status_code=404, detail="Graph file path/key not set")
 
     if os.path.exists(graph.filePath):
         return FileResponse(graph.filePath, media_type="image/png")
 
-    return JSONResponse({"url": graph.filePath})
+    url = generate_presigned_url(graph.filePath)
+    if not url:
+        raise HTTPException(status_code=500, detail="Failed to generate graph URL")
+
+    return JSONResponse({"url": url})
 
 
 @app.get("/dataset/{dataset_id}/features", response_model=FeaturesResponse)

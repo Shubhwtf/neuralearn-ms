@@ -48,6 +48,8 @@ class Dataset(Base):
     status: Mapped[str] = mapped_column(String, nullable=False)
     rawDataPath: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     cleanedDataPath: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    rawUrl: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    cleanedUrl: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     cleaningLogs: Mapped[List["CleaningLog"]] = relationship(
         back_populates="dataset", cascade="all, delete-orphan"

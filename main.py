@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request
 from fastapi.responses import JSONResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
 import pandas as pd
@@ -32,6 +33,14 @@ from database import (
 )
 
 app = FastAPI(title="NeuraLearn microservices api", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 data_loader = DataLoader()
 eda_service = EDAService()

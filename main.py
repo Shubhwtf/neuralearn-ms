@@ -346,10 +346,22 @@ async def get_features(dataset_id: str):
             detail=f"Dataset processing not completed. Current status: {dataset.status}"
         )
     
-    if not dataset.cleanedDataPath:
-        raise HTTPException(status_code=404, detail="Cleaned dataset not found")
+    df = None
     
-    df = data_loader.load_saved_dataset(dataset.cleanedDataPath)
+    if dataset.cleanedUrl:
+        url = generate_presigned_url(dataset.cleanedUrl)
+        if url:
+            try:
+                df = await data_loader.load_from_url(url)
+            except Exception as e:
+                print(f"Failed to load from S3 URL: {e}")
+                df = None
+    
+    if df is None and dataset.cleanedDataPath and os.path.exists(dataset.cleanedDataPath):
+        df = data_loader.load_saved_dataset(dataset.cleanedDataPath)
+    
+    if df is None:
+        raise HTTPException(status_code=404, detail="Cleaned dataset not found")
     
     feature_service = FeatureEngineeringService()
     features = feature_service.get_input_output_features(df)

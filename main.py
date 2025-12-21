@@ -247,7 +247,6 @@ async def upload_dataset(
         )
         
     except Exception as e:
-        # Clean up temp file if it exists
         if file_path and os.path.exists(file_path):
             try:
                 os.remove(file_path)

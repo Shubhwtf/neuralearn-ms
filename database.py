@@ -157,8 +157,25 @@ def _build_async_url(database_url: str) -> str:
     return urlunparse(cleaned)
 
 
-DATABASE_URL = os.getenv("DATABASE_URL", "")
+_raw_db_url = os.getenv("DATABASE_URL", "")
+if _raw_db_url.startswith("DATABASE_URL="):
+    DATABASE_URL = _raw_db_url[len("DATABASE_URL="):].strip()
+else:
+    DATABASE_URL = _raw_db_url.strip()
+
+if not DATABASE_URL:
+    raise ValueError(
+        "DATABASE_URL environment variable is not set or is empty. "
+        "Please set DATABASE_URL to a valid PostgreSQL connection string."
+    )
+
 ASYNC_DATABASE_URL = _build_async_url(DATABASE_URL)
+
+if not ASYNC_DATABASE_URL:
+    raise ValueError(
+        f"Failed to build async database URL from DATABASE_URL. "
+        f"Original URL: {DATABASE_URL[:50]}..." if len(DATABASE_URL) > 50 else DATABASE_URL
+    )
 
 engine = create_async_engine(ASYNC_DATABASE_URL, echo=False, future=True)
 AsyncSessionLocal = async_sessionmaker(

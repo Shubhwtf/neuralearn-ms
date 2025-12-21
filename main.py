@@ -198,6 +198,7 @@ async def upload_dataset(
     if not file and not dataset_url:
         raise HTTPException(status_code=400, detail="Either file or dataset_url must be provided")
     
+    file_path = None
     try:
         if file:
             file_path = STORAGE_DIR / f"temp_{uuid.uuid4()}_{file.filename}"
@@ -206,7 +207,9 @@ async def upload_dataset(
                 f.write(content)
             
             df = await data_loader.load_from_file(str(file_path))
-            os.remove(file_path)
+            if file_path and os.path.exists(file_path):
+                os.remove(file_path)
+                file_path = None
         else:
             df = await data_loader.load_from_url(dataset_url)
         
@@ -244,6 +247,12 @@ async def upload_dataset(
         )
         
     except Exception as e:
+        # Clean up temp file if it exists
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except OSError as cleanup_error:
+                print(f"Failed to cleanup temp file {file_path}: {cleanup_error}")
         raise HTTPException(status_code=500, detail=f"Error uploading dataset: {str(e)}")
 
 

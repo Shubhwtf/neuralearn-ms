@@ -112,6 +112,18 @@ class CollaborationDatasetItem(BaseModel):
     url: str
 
 
+class DatasetStatusResponse(BaseModel):
+    dataset_id: str
+    status: str
+    rows: int
+    columns: int
+    user_id: str
+    collaboration_id: Optional[str]
+    created_at: str
+    updated_at: str
+    progress_info: Optional[str] = None
+
+
 async def process_dataset(dataset_id: str, df: pd.DataFrame):
     try:
         await update_dataset(dataset_id, status="processing")
@@ -273,6 +285,48 @@ async def get_raw_dataset(dataset_id: str):
             return JSONResponse({"url": url})
 
     raise HTTPException(status_code=404, detail="Raw dataset not available")
+
+
+@app.get("/dataset/{dataset_id}/status", response_model=DatasetStatusResponse)
+async def poll_dataset_status(dataset_id: str):
+    """
+    Poll the processing status of a specific dataset.
+    
+    This endpoint is designed for client-side polling to track dataset processing progress.
+    Returns current status and metadata for the dataset.
+    
+    Status values:
+    - "uploaded": Dataset received and queued for processing
+    - "processing": Background processing in progress
+    - "completed": All processing steps finished successfully
+    - "failed": Processing encountered an error
+    """
+    dataset = await get_dataset(dataset_id)
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    # Determine progress information based on status
+    progress_info = None
+    if dataset.status == "uploaded":
+        progress_info = "Dataset uploaded successfully, queued for processing"
+    elif dataset.status == "processing":
+        progress_info = "Processing dataset: cleaning, analysis, and feature engineering in progress"
+    elif dataset.status == "completed":
+        progress_info = "Dataset processing completed successfully"
+    elif dataset.status == "failed":
+        progress_info = "Dataset processing failed - check logs for details"
+    
+    return DatasetStatusResponse(
+        dataset_id=dataset.id,
+        status=dataset.status,
+        rows=dataset.rows,
+        columns=dataset.columns,
+        user_id=dataset.userId,
+        collaboration_id=dataset.collaborationId,
+        created_at=dataset.createdAt.isoformat(),
+        updated_at=dataset.updatedAt.isoformat(),
+        progress_info=progress_info
+    )
 
 
 @app.get("/dataset/{dataset_id}/cleaned")
@@ -474,6 +528,57 @@ async def get_collaboration_cleaned_datasets(collaboration_id: str, request: Req
             )
         )
     return cleaned
+
+
+@app.get("/datasets/status", response_model=List[DatasetStatusResponse])
+async def poll_multiple_datasets_status(
+    user_id: Optional[str] = None,
+    collaboration_id: Optional[str] = None,
+    status_filter: Optional[str] = None
+):
+    """
+    Poll the processing status of multiple datasets.
+    
+    Useful for dashboard interfaces that need to show status of multiple datasets.
+    Can filter by user_id, collaboration_id, and/or status.
+    
+    Args:
+        user_id: Filter datasets by user
+        collaboration_id: Filter datasets by collaboration
+        status_filter: Filter by specific status (uploaded, processing, completed, failed)
+    """
+    datasets = await list_datasets(user_id=user_id, collaboration_id=collaboration_id)
+    
+    # Apply status filter if provided
+    if status_filter:
+        datasets = [ds for ds in datasets if ds.status == status_filter]
+    
+    status_responses = []
+    for dataset in datasets:
+        # Determine progress information based on status
+        progress_info = None
+        if dataset.status == "uploaded":
+            progress_info = "Dataset uploaded successfully, queued for processing"
+        elif dataset.status == "processing":
+            progress_info = "Processing dataset: cleaning, analysis, and feature engineering in progress"
+        elif dataset.status == "completed":
+            progress_info = "Dataset processing completed successfully"
+        elif dataset.status == "failed":
+            progress_info = "Dataset processing failed - check logs for details"
+        
+        status_responses.append(DatasetStatusResponse(
+            dataset_id=dataset.id,
+            status=dataset.status,
+            rows=dataset.rows,
+            columns=dataset.columns,
+            user_id=dataset.userId,
+            collaboration_id=dataset.collaborationId,
+            created_at=dataset.createdAt.isoformat(),
+            updated_at=dataset.updatedAt.isoformat(),
+            progress_info=progress_info
+        ))
+    
+    return status_responses
 
 
 @app.get("/datasets", response_model=List[DatasetItem])

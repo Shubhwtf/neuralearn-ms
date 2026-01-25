@@ -5,12 +5,14 @@ from services.gemini_client import GeminiClient
 
 
 class DataCleaner:
-    def __init__(self, use_gemini: bool = True, max_gemini_calls: int = 3):
-        self.use_gemini = use_gemini
-        self.max_gemini_calls = max_gemini_calls
-        self.gemini = GeminiClient() if use_gemini else None
+    def __init__(self, mode: str = "fast"):
+        self.mode = mode
+        self.use_gemini = mode in ["smart", "deep"]
+        self.max_gemini_calls = 3 if mode == "smart" else (3 if mode == "deep" else 0)
+        self.gemini = GeminiClient() if self.use_gemini else None
         self.gemini_call_count = 0
         self.cleaning_logs: List[Dict[str, Any]] = []
+        self.df_sample: Optional[pd.DataFrame] = None
     
     def get_column_stats(self, df: pd.DataFrame, column: str) -> Dict[str, Any]:
         stats = {
@@ -66,6 +68,11 @@ class DataCleaner:
         self.gemini_call_count = 0
         total_rows = len(df)
         
+        if self.mode == "deep":
+            self.df_sample = df.head(10).copy()
+        elif self.mode == "smart":
+            self.df_sample = df.head(10).copy()
+        
         columns_with_nulls = []
         for column in df.columns:
             null_count = df[column].isnull().sum()
@@ -76,26 +83,59 @@ class DataCleaner:
         columns_with_nulls.sort(key=lambda x: (x[2], x[1]), reverse=True)
         
         for column, null_count, null_percentage in columns_with_nulls:
-            use_gemini_for_this = (
-                self.use_gemini 
-                and self.gemini_call_count < self.max_gemini_calls
-                and null_percentage > 0.2
-            )
-            
-            if use_gemini_for_this:
-                stats = self.get_column_stats(df, column)
-                try:
-                    suggestion = self.gemini.get_missing_value_strategy(
-                        column_name=column,
-                        dtype=stats["dtype"],
-                        stats=stats,
-                        null_count=null_count
-                    )
+            if self.mode == "fast":
+                suggestion = self._get_strategy_heuristic(df, column, null_count, total_rows)
+                action = suggestion["action"]
+                reason = suggestion["reason"]
+            elif self.mode == "smart":
+                use_gemini_for_this = (
+                    self.gemini_call_count < self.max_gemini_calls
+                    and null_percentage > 0.2
+                )
+                if use_gemini_for_this:
+                    stats = self.get_column_stats(df, column)
+                    try:
+                        suggestion = self.gemini.get_missing_value_strategy(
+                            column_name=column,
+                            dtype=stats["dtype"],
+                            stats=stats,
+                            null_count=null_count
+                        )
+                        action = suggestion["action"]
+                        reason = suggestion["reason"]
+                        self.gemini_call_count += 1
+                    except Exception as e:
+                        print(f"Gemini error for {column}: {e}, using heuristic")
+                        suggestion = self._get_strategy_heuristic(df, column, null_count, total_rows)
+                        action = suggestion["action"]
+                        reason = suggestion["reason"]
+                else:
+                    suggestion = self._get_strategy_heuristic(df, column, null_count, total_rows)
                     action = suggestion["action"]
                     reason = suggestion["reason"]
-                    self.gemini_call_count += 1
-                except Exception as e:
-                    print(f"Gemini error for {column}: {e}, using heuristic")
+            elif self.mode == "deep":
+                use_gemini_for_this = (
+                    self.gemini_call_count < self.max_gemini_calls
+                    and null_percentage > 0.1
+                )
+                if use_gemini_for_this:
+                    stats = self.get_column_stats(df, column)
+                    try:
+                        suggestion = self.gemini.get_missing_value_strategy(
+                            column_name=column,
+                            dtype=stats["dtype"],
+                            stats=stats,
+                            null_count=null_count
+                        )
+                        action = suggestion["action"]
+                        reason = suggestion["reason"]
+                        self.gemini_call_count += 1
+                    except Exception as e:
+                        print(f"Gemini error for {column}: {e}, using heuristic")
+                        suggestion = self._get_strategy_heuristic(df, column, null_count, total_rows)
+                        action = suggestion["action"]
+                        reason = suggestion["reason"]
+                else:
                     suggestion = self._get_strategy_heuristic(df, column, null_count, total_rows)
                     action = suggestion["action"]
                     reason = suggestion["reason"]
@@ -199,3 +239,6 @@ class DataCleaner:
     
     def get_cleaning_logs(self) -> List[Dict[str, Any]]:
         return self.cleaning_logs
+    
+    def get_sample_dataframe(self) -> Optional[pd.DataFrame]:
+        return self.df_sample

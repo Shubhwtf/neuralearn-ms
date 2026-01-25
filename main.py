@@ -30,6 +30,10 @@ from database import (
     get_graphs_metadata,
     get_graph_metadata_by_id,
     list_datasets,
+    create_cleaning_report,
+    get_cleaning_report,
+    count_user_mode_usage,
+    create_user_mode_usage,
 )
 
 app = FastAPI(title="NeuraLearn microservices api", version="1.0.0")
@@ -110,6 +114,7 @@ class CollaborationDatasetItem(BaseModel):
     user_id: str
     collaboration_id: Optional[str]
     url: str
+    database_name: Optional[str] = None
 
 
 class DatasetStatusResponse(BaseModel):
@@ -124,11 +129,15 @@ class DatasetStatusResponse(BaseModel):
     progress_info: Optional[str] = None
 
 
-async def process_dataset(dataset_id: str, df: pd.DataFrame):
+async def process_dataset(dataset_id: str, df: pd.DataFrame, mode: str = "fast"):
     try:
         await update_dataset(dataset_id, status="processing")
         
-        cleaner = DataCleaner()
+        dataset = await get_dataset(dataset_id)
+        if not dataset:
+            return
+        
+        cleaner = DataCleaner(mode=mode)
         df_cleaned = cleaner.handle_missing_values(df)
         
         for log in cleaner.get_cleaning_logs():
@@ -180,6 +189,43 @@ async def process_dataset(dataset_id: str, df: pd.DataFrame):
                 details=log["details"]
             )
         
+        if mode == "deep" and cleaner.gemini:
+            try:
+                sample_df = cleaner.get_sample_dataframe()
+                if sample_df is not None and len(cleaner.get_cleaning_logs()) > 0:
+                    report = cleaner.gemini.get_deep_cleaning_report(
+                        df_sample=sample_df,
+                        cleaning_logs=cleaner.get_cleaning_logs(),
+                        dataset_name=dataset.databaseName or "Dataset"
+                    )
+                    if report and report.get("reasoning"):
+                        recommendations = report.get("recommendations")
+                        if isinstance(recommendations, list):
+                            recommendations = "\n".join(f"- {rec}" if isinstance(rec, str) else str(rec) for rec in recommendations)
+                        elif recommendations is None:
+                            recommendations = None
+                        elif not isinstance(recommendations, str):
+                            recommendations = str(recommendations)
+                        
+                        await create_cleaning_report(
+                            dataset_id=dataset_id,
+                            reasoning=report["reasoning"],
+                            summary=report["summary"],
+                            recommendations=recommendations
+                        )
+            except Exception as e:
+                error_str = str(e)
+                if "quota" in error_str.lower() or "429" in error_str or "rate limit" in error_str.lower():
+                    print(f"Gemini quota exhausted, skipping report generation: {e}")
+                else:
+                    print(f"Failed to generate deep cleaning report: {e}")
+                    await create_cleaning_report(
+                        dataset_id=dataset_id,
+                        reasoning=f"Dataset cleaned using {len(cleaner.get_cleaning_logs())} actions. AI-assisted cleaning was attempted but report generation encountered an error: {error_str[:100]}",
+                        summary=f"Cleaned {len(cleaner.get_cleaning_logs())} columns with missing values. Data quality improved.",
+                        recommendations="Review cleaned data for domain-specific validation. Consider retrying for detailed AI-generated report."
+                    )
+        
         cleaned_path = data_loader.save_cleaned_dataset(df_final, dataset_id)
 
         cleaned_s3_key = f"datasets/{dataset_id}/cleaned.csv"
@@ -196,7 +242,7 @@ async def process_dataset(dataset_id: str, df: pd.DataFrame):
         
     except Exception as e:
         await update_dataset(dataset_id, status="failed")
-        print(f"Error processing dataset {dataset_id}: {e}")
+        raise
 
 
 @app.post("/dataset/upload", response_model=DatasetResponse)
@@ -206,13 +252,35 @@ async def upload_dataset(
     dataset_url: Optional[str] = None,
     user_id: str = "anonymous",
     collaboration_id: Optional[str] = None,
+    mode: str = "fast",
 ):
     if not file and not dataset_url:
         raise HTTPException(status_code=400, detail="Either file or dataset_url must be provided")
     
+    if mode not in ["fast", "smart", "deep"]:
+        raise HTTPException(status_code=400, detail="Mode must be one of: fast, smart, deep")
+    
+    if mode == "smart":
+        usage_count = await count_user_mode_usage(user_id, "smart")
+        if usage_count >= 3:
+            raise HTTPException(
+                status_code=429,
+                detail="Smart mode limit reached (3 per user). Please use fast mode or wait."
+            )
+    elif mode == "deep":
+        usage_count = await count_user_mode_usage(user_id, "deep")
+        if usage_count >= 1:
+            raise HTTPException(
+                status_code=429,
+                detail="Deep mode limit reached (1 per user). Please use fast or smart mode."
+            )
+    
     file_path = None
+    database_name = None
     try:
         if file:
+            filename = file.filename or "dataset"
+            database_name = Path(filename).stem
             file_path = STORAGE_DIR / f"temp_{uuid.uuid4()}_{file.filename}"
             with open(file_path, "wb") as f:
                 content = await file.read()
@@ -223,6 +291,11 @@ async def upload_dataset(
                 os.remove(file_path)
                 file_path = None
         else:
+            if dataset_url:
+                url_path = Path(dataset_url.split('?')[0])
+                database_name = url_path.stem if url_path.suffix else None
+                if not database_name or database_name in ['', 'index', 'default']:
+                    database_name = "dataset_from_url"
             df = await data_loader.load_from_url(dataset_url)
         
         if df.shape[0] > 100000 or df.shape[1] > 100:
@@ -238,9 +311,13 @@ async def upload_dataset(
             user_id=user_id,
             collaboration_id=collaboration_id,
             raw_data_path=None,
+            database_name=database_name,
+            mode=mode,
         )
         
         dataset_id = dataset.id
+        
+        await create_user_mode_usage(user_id=user_id, mode=mode, dataset_id=dataset_id)
         
         raw_path = data_loader.save_raw_dataset(df, dataset_id)
         await update_dataset(
@@ -249,7 +326,7 @@ async def upload_dataset(
             rawUrl=None,
         )
         
-        background_tasks.add_task(process_dataset, dataset_id, df)
+        background_tasks.add_task(process_dataset, dataset_id, df, mode)
         
         return DatasetResponse(
             dataset_id=dataset_id,
@@ -262,8 +339,8 @@ async def upload_dataset(
         if file_path and os.path.exists(file_path):
             try:
                 os.remove(file_path)
-            except OSError as cleanup_error:
-                print(f"Failed to cleanup temp file {file_path}: {cleanup_error}")
+            except OSError:
+                pass
         raise HTTPException(status_code=500, detail=f"Error uploading dataset: {str(e)}")
 
 
@@ -305,7 +382,6 @@ async def poll_dataset_status(dataset_id: str):
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
     
-    # Determine progress information based on status
     progress_info = None
     if dataset.status == "uploaded":
         progress_info = "Dataset uploaded successfully, queued for processing"
@@ -415,8 +491,7 @@ async def get_features(dataset_id: str):
         if url:
             try:
                 df = await data_loader.load_from_url(url)
-            except Exception as e:
-                print(f"Failed to load from S3 URL: {e}")
+            except Exception:
                 df = None
     
     if df is None and dataset.cleanedDataPath and os.path.exists(dataset.cleanedDataPath):
@@ -480,6 +555,32 @@ async def get_feature_logs_endpoint(dataset_id: str):
     } for log in logs]
 
 
+@app.get("/dataset/{dataset_id}/report")
+async def get_cleaning_report_endpoint(dataset_id: str):
+    dataset = await get_dataset(dataset_id)
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    if dataset.mode != "deep":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cleaning report is only available for deep mode. This dataset was processed with {dataset.mode} mode."
+        )
+    
+    report = await get_cleaning_report(dataset_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Cleaning report not found")
+    
+    return {
+        "dataset_id": dataset_id,
+        "mode": dataset.mode,
+        "reasoning": report.reasoning,
+        "summary": report.summary,
+        "recommendations": report.recommendations,
+        "created_at": report.createdAt.isoformat()
+    }
+
+
 @app.get("/collaboration/{collaboration_id}/graphs", response_model=CollaborationGraphsResponse)
 async def get_collaboration_graphs(collaboration_id: str):
     datasets = await list_datasets(collaboration_id=collaboration_id)
@@ -525,6 +626,7 @@ async def get_collaboration_cleaned_datasets(collaboration_id: str, request: Req
                 user_id=ds.userId,
                 collaboration_id=ds.collaborationId,
                 url=dataset_url,
+                database_name=ds.databaseName,
             )
         )
     return cleaned
@@ -549,13 +651,11 @@ async def poll_multiple_datasets_status(
     """
     datasets = await list_datasets(user_id=user_id, collaboration_id=collaboration_id)
     
-    # Apply status filter if provided
     if status_filter:
         datasets = [ds for ds in datasets if ds.status == status_filter]
     
     status_responses = []
     for dataset in datasets:
-        # Determine progress information based on status
         progress_info = None
         if dataset.status == "uploaded":
             progress_info = "Dataset uploaded successfully, queued for processing"

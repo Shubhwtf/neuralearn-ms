@@ -9,6 +9,7 @@ from sqlalchemy import (
     Text,
     ForeignKey,
     select,
+    text,
 )
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -50,6 +51,8 @@ class Dataset(Base):
     cleanedDataPath: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     rawUrl: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     cleanedUrl: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    databaseName: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    mode: Mapped[str] = mapped_column(String, nullable=False, default="fast")
 
     cleaningLogs: Mapped[List["CleaningLog"]] = relationship(
         back_populates="dataset", cascade="all, delete-orphan"
@@ -62,6 +65,40 @@ class Dataset(Base):
     )
     graphs: Mapped[List["GraphMetadata"]] = relationship(
         back_populates="dataset", cascade="all, delete-orphan"
+    )
+    cleaningReport: Mapped[Optional["CleaningReport"]] = relationship(
+        back_populates="dataset", cascade="all, delete-orphan", uselist=False
+    )
+
+
+class CleaningReport(Base):
+    __tablename__ = "CleaningReport"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    datasetId: Mapped[str] = mapped_column(
+        String, ForeignKey("Dataset.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    reasoning: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    recommendations: Mapped[str] = mapped_column(Text, nullable=True)
+    createdAt: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow
+    )
+
+    dataset: Mapped[Dataset] = relationship(back_populates="cleaningReport")
+
+
+class UserModeUsage(Base):
+    __tablename__ = "UserModeUsage"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    userId: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    mode: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    datasetId: Mapped[str] = mapped_column(
+        String, ForeignKey("Dataset.id", ondelete="CASCADE"), nullable=True
+    )
+    createdAt: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow
     )
 
 
@@ -187,6 +224,46 @@ AsyncSessionLocal = async_sessionmaker(
 async def connect_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        try:
+            await conn.execute(
+                text("""
+                DO $$ 
+                BEGIN 
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_schema = 'public' 
+                        AND table_name = 'Dataset' 
+                        AND column_name = 'databaseName'
+                    ) THEN
+                        ALTER TABLE "Dataset" ADD COLUMN "databaseName" VARCHAR;
+                    END IF;
+                END $$;
+                """)
+            )
+            await conn.execute(
+                text("""
+                DO $$ 
+                BEGIN 
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_schema = 'public' 
+                        AND table_name = 'Dataset' 
+                        AND column_name = 'mode'
+                    ) THEN
+                        ALTER TABLE "Dataset" ADD COLUMN mode VARCHAR DEFAULT 'fast' NOT NULL;
+                    END IF;
+                END $$;
+                """)
+            )
+        except Exception:
+            try:
+                await conn.execute(text('ALTER TABLE "Dataset" ADD COLUMN IF NOT EXISTS "databaseName" VARCHAR;'))
+            except Exception:
+                pass
+            try:
+                await conn.execute(text("ALTER TABLE \"Dataset\" ADD COLUMN IF NOT EXISTS mode VARCHAR DEFAULT 'fast' NOT NULL;"))
+            except Exception:
+                pass
 
 async def disconnect_db():
     await engine.dispose()
@@ -199,6 +276,8 @@ async def create_dataset(
     user_id: str,
     collaboration_id: str | None = None,
     raw_data_path: str | None = None,
+    database_name: str | None = None,
+    mode: str = "fast",
 ) -> Dataset:
     from uuid import uuid4
 
@@ -211,6 +290,8 @@ async def create_dataset(
             columns=columns,
             status=status,
             rawDataPath=raw_data_path,
+            databaseName=database_name,
+            mode=mode,
         )
         session.add(dataset)
         await session.commit()
@@ -369,3 +450,64 @@ async def get_graphs_metadata(dataset_id: str) -> List[GraphMetadata]:
 async def get_graph_metadata_by_id(graph_id: str) -> GraphMetadata | None:
     async with AsyncSessionLocal() as session:
         return await session.get(GraphMetadata, graph_id)
+
+
+async def create_cleaning_report(
+    dataset_id: str,
+    reasoning: str,
+    summary: str,
+    recommendations: str | None = None,
+) -> CleaningReport:
+    from uuid import uuid4
+
+    async with AsyncSessionLocal() as session:
+        report = CleaningReport(
+            id=str(uuid4()),
+            datasetId=dataset_id,
+            reasoning=reasoning,
+            summary=summary,
+            recommendations=recommendations,
+        )
+        session.add(report)
+        await session.commit()
+        await session.refresh(report)
+        return report
+
+
+async def get_cleaning_report(dataset_id: str) -> CleaningReport | None:
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(CleaningReport).where(CleaningReport.datasetId == dataset_id)
+        )
+        return result.scalar_one_or_none()
+
+
+async def count_user_mode_usage(user_id: str, mode: str) -> int:
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(UserModeUsage).where(
+                UserModeUsage.userId == user_id,
+                UserModeUsage.mode == mode
+            )
+        )
+        return len(list(result.scalars().all()))
+
+
+async def create_user_mode_usage(
+    user_id: str,
+    mode: str,
+    dataset_id: str | None = None,
+) -> UserModeUsage:
+    from uuid import uuid4
+
+    async with AsyncSessionLocal() as session:
+        usage = UserModeUsage(
+            id=str(uuid4()),
+            userId=user_id,
+            mode=mode,
+            datasetId=dataset_id,
+        )
+        session.add(usage)
+        await session.commit()
+        await session.refresh(usage)
+        return usage

@@ -5,11 +5,13 @@ A comprehensive FastAPI-based microservice for automated data processing, cleani
 ## 🚀 Features
 
 - **Automated Data Processing Pipeline**: Upload datasets and get them automatically cleaned, analyzed, and feature-engineered
+- **Multiple Cleaning Modes**: Choose from fast (basic), smart (limited AI), or deep (comprehensive AI) cleaning modes
 - **AI-Powered Data Cleaning**: Uses Google Gemini API for intelligent missing value handling strategies
+- **Detailed Cleaning Reports**: Deep mode provides comprehensive reports with reasoning, examples, and recommendations
 - **Comprehensive EDA**: Generates histograms, boxplots, correlation heatmaps, and count plots
 - **Smart Feature Engineering**: Automated categorical encoding, feature scaling, and derived feature creation
 - **Outlier Detection & Handling**: Multiple methods (IQR, Z-score) with configurable fixing strategies
-- **Cloud Storage Integration**: AWS S3 integration for scalable file storage
+- **Cloud Storage Integration**: AWS S3 integration for scalable file storage with Signature Version 4 support
 - **Database Logging**: PostgreSQL database for tracking all processing steps and metadata
 - **Collaboration Support**: Multi-user collaboration features with shared datasets
 - **RESTful API**: Complete REST API with automatic documentation
@@ -26,7 +28,8 @@ A comprehensive FastAPI-based microservice for automated data processing, cleani
 │   ├── eda.py             # Exploratory Data Analysis
 │   ├── outliers.py        # Outlier detection and handling
 │   ├── feature_engineering.py # Feature engineering with AI
-│   └── gemini_client.py   # Google Gemini API integration
+│   ├── gemini_client.py   # Google Gemini API integration
+│   └── schema.py          # Pydantic models for API responses
 └── storage/               # Local file storage
     ├── datasets/          # Raw and cleaned datasets
     └── graphs/            # Generated EDA visualizations
@@ -96,6 +99,12 @@ Upload a dataset file or provide a URL for processing.
 - `dataset_url`: URL to dataset (alternative to file)
 - `user_id`: User identifier (default: "anonymous")
 - `collaboration_id`: Collaboration group ID (optional)
+- `mode`: Cleaning mode - `"fast"` (default), `"smart"`, or `"deep"` (optional)
+
+**Cleaning Modes:**
+- **fast**: Basic cleaning without AI, unlimited usage, quick processing
+- **smart**: Limited AI assistance (first 10 rows for context), max 3 calls per user
+- **deep**: Full AI reasoning with detailed report, max 1 call per user
 
 **Response:**
 ```json
@@ -103,19 +112,45 @@ Upload a dataset file or provide a URL for processing.
   "dataset_id": "uuid",
   "rows": 1000,
   "columns": 10,
-  "status": "uploaded"
+  "status": "uploaded",
+  "mode": "fast"
 }
 ```
 
 #### Get Dataset Status
 ```http
-GET /datasets?user_id={user_id}&collaboration_id={collaboration_id}
+GET /dataset/{dataset_id}/status   # Single dataset status
+GET /datasets/status?user_id={user_id}&collaboration_id={collaboration_id}  # Multiple datasets
+GET /datasets?user_id={user_id}&collaboration_id={collaboration_id}  # List datasets
 ```
+
+**Status Response includes:**
+- `database_name`: Extracted from filename (e.g., "x" from "x.csv")
+- `mode`: Cleaning mode used
+- `progress_info`: Human-readable progress information
 
 #### Download Processed Data
 ```http
 GET /dataset/{dataset_id}/raw      # Original dataset
 GET /dataset/{dataset_id}/cleaned  # Processed dataset
+```
+
+#### Cleaning Report (Deep Mode Only)
+```http
+GET /dataset/{dataset_id}/report
+```
+Get detailed cleaning report for datasets processed with `deep` mode.
+
+**Response:**
+```json
+{
+  "dataset_id": "uuid",
+  "mode": "deep",
+  "reasoning": "Detailed explanation with examples...",
+  "summary": "Executive summary of data quality...",
+  "recommendations": "Actionable recommendations...",
+  "created_at": "2024-01-25T20:17:32.376294"
+}
 ```
 
 #### EDA Visualizations
@@ -139,7 +174,7 @@ GET /dataset/{dataset_id}/logs/features   # Feature engineering logs
 #### Collaboration Features
 ```http
 GET /collaboration/{collaboration_id}/graphs    # All graphs in collaboration
-GET /collaboration/{collaboration_id}/datasets/cleaned  # All cleaned datasets
+GET /collaboration/{collaboration_id}/datasets/cleaned  # All cleaned datasets (includes database_name)
 ```
 
 ### API Documentation
@@ -148,22 +183,41 @@ GET /collaboration/{collaboration_id}/datasets/cleaned  # All cleaned datasets
 
 ## 🔄 Data Processing Pipeline
 
-1. **Upload**: Dataset uploaded via file or URL
+1. **Upload**: Dataset uploaded via file or URL with selected cleaning mode
 2. **Validation**: Size and format validation (max 100K rows, 100 columns)
 3. **Storage**: Raw data saved locally and optionally to S3
-4. **Cleaning**: AI-powered missing value handling
+4. **Cleaning**: Mode-specific missing value handling
+   - **Fast**: Heuristic-based cleaning (mean, median, mode, forward-fill)
+   - **Smart**: Limited AI assistance for columns with >20% nulls (up to 3 Gemini calls)
+   - **Deep**: Full AI reasoning for top 3 columns with >10% nulls (1 Gemini call with detailed report)
 5. **EDA**: Automatic generation of visualizations and statistics
 6. **Outlier Detection**: IQR/Z-score based outlier detection and fixing
 7. **Feature Engineering**: Categorical encoding, scaling, derived features
-8. **Completion**: Cleaned dataset and metadata available for download
+8. **Report Generation**: Deep mode generates comprehensive cleaning report
+9. **Completion**: Cleaned dataset and metadata available for download
 
 ## 🤖 AI-Powered Features
 
-### Intelligent Data Cleaning
-- Analyzes column statistics and data types
-- Uses Gemini API to suggest optimal missing value strategies
-- Fallback to heuristic-based approaches
-- Supports: mean, median, mode, forward-fill, drop column strategies
+### Intelligent Data Cleaning Modes
+
+#### Fast Mode (Default)
+- **No AI usage**: Pure heuristic-based cleaning
+- **Unlimited usage**: No rate limits
+- **Quick processing**: Fastest option
+- **Strategies**: Mean, median, mode, forward-fill, drop column based on data type
+
+#### Smart Mode
+- **Limited AI**: Uses Gemini API for columns with >20% nulls
+- **Context**: First 10 rows used for AI context
+- **Rate limit**: Maximum 3 calls per user
+- **Balanced**: Good mix of speed and intelligence
+
+#### Deep Mode
+- **Full AI reasoning**: Comprehensive Gemini analysis
+- **Detailed report**: Includes reasoning, examples, and recommendations
+- **Top columns**: Focuses on top 3 columns with >10% nulls
+- **Rate limit**: Maximum 1 call per user
+- **Best quality**: Most thorough cleaning with detailed documentation
 
 ### Smart Feature Engineering
 - Automatic categorical encoding (one-hot, label encoding)
@@ -174,8 +228,10 @@ GET /collaboration/{collaboration_id}/datasets/cleaned  # All cleaned datasets
 ## 🗄️ Database Schema
 
 ### Tables
-- **Dataset**: Main dataset metadata and status
+- **Dataset**: Main dataset metadata, status, mode, and database_name
 - **CleaningLog**: Data cleaning operations log
+- **CleaningReport**: Detailed cleaning reports for deep mode (reasoning, summary, recommendations)
+- **UserModeUsage**: Rate limiting tracking for smart and deep modes
 - **OutlierLog**: Outlier detection and handling log
 - **FeatureLog**: Feature engineering operations log
 - **GraphMetadata**: EDA visualization metadata
@@ -187,6 +243,7 @@ GET /collaboration/{collaboration_id}/datasets/cleaned  # All cleaned datasets
 - EDA visualizations storage
 - Pre-signed URL generation for secure access
 - Configurable retention and cleanup
+- **Signature Version 4**: Explicitly configured for compatibility with all AWS regions
 
 ## 🚀 Deployment
 
@@ -211,20 +268,48 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 ### Data Processing Limits
 - Maximum dataset size: 100,000 rows × 100 columns
 - Outlier percentage threshold: 10%
-- Maximum Gemini API calls per dataset: 3
+- **Cleaning Mode Limits:**
+  - Fast mode: Unlimited
+  - Smart mode: 3 calls per user
+  - Deep mode: 1 call per user
 
 ### Storage Configuration
 - Local storage: `storage/` directory
 - S3 integration: Optional, configured via environment variables
 - File cleanup: Automatic cleanup of temporary files
+- **S3 Configuration**: Requires Signature Version 4 (automatically configured)
 
 ## 🧪 Testing
 
 Use the included `sample_dataset.csv` for testing:
+
+**Fast Mode (Default):**
 ```bash
 curl -X POST "http://localhost:8000/dataset/upload" \
   -F "file=@sample_dataset.csv" \
-  -F "user_id=test_user"
+  -F "user_id=test_user" \
+  -F "mode=fast"
+```
+
+**Smart Mode:**
+```bash
+curl -X POST "http://localhost:8000/dataset/upload" \
+  -F "file=@sample_dataset.csv" \
+  -F "user_id=test_user" \
+  -F "mode=smart"
+```
+
+**Deep Mode:**
+```bash
+curl -X POST "http://localhost:8000/dataset/upload" \
+  -F "file=@sample_dataset.csv" \
+  -F "user_id=test_user" \
+  -F "mode=deep"
+```
+
+**Get Cleaning Report (Deep Mode Only):**
+```bash
+curl "http://localhost:8000/dataset/{dataset_id}/report"
 ```
 
 ## 📊 Monitoring & Logging

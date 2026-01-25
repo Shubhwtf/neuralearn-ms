@@ -2,6 +2,7 @@ import os
 from typing import Optional
 
 import boto3
+from botocore.client import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 
@@ -35,11 +36,16 @@ def _get_s3_client() -> Optional[boto3.client]:
         return _s3_client
     
     try:
+        config = Config(
+            signature_version='s3v4',
+            region_name=AWS_REGION
+        )
         _s3_client = boto3.client(
             "s3",
             region_name=AWS_REGION,
             aws_access_key_id=AWS_ACCESS_KEY_ID,
             aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+            config=config,
         )
         return _s3_client
     except Exception:

@@ -1,7 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from typing import Optional, List
 import pandas as pd
 import uuid
@@ -13,6 +12,18 @@ from services.cleaner import DataCleaner
 from services.eda import EDAService
 from services.outliers import OutlierService
 from services.feature_engineering import FeatureEngineeringService
+from services.schema import (
+    DatasetResponse,
+    DatasetItem,
+    GraphInfo,
+    GraphsResponse,
+    FeaturesResponse,
+    CollaborationGraphInfo,
+    CollaborationGraphsResponse,
+    CollaborationDatasetItem,
+    DatasetStatusResponse,
+    CleaningReportResponse,
+)
 from s3_client import upload_file_and_get_key, generate_presigned_url
 from database import (
     connect_db,
@@ -61,72 +72,6 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     await disconnect_db()
-
-
-class DatasetResponse(BaseModel):
-    dataset_id: str
-    rows: int
-    columns: int
-    status: str
-
-
-class DatasetItem(BaseModel):
-    id: str
-    rows: int
-    columns: int
-    status: str
-    user_id: str
-    collaboration_id: Optional[str]
-    created_at: str
-
-
-class GraphInfo(BaseModel):
-    type: str
-    column: Optional[str]
-    url: str
-
-
-class GraphsResponse(BaseModel):
-    graphs: List[GraphInfo]
-
-
-class FeaturesResponse(BaseModel):
-    input_features: List[str]
-    output_features: List[str]
-
-
-class CollaborationGraphInfo(BaseModel):
-    dataset_id: str
-    type: str
-    column: Optional[str]
-    url: str
-
-
-class CollaborationGraphsResponse(BaseModel):
-    graphs: List[CollaborationGraphInfo]
-
-
-class CollaborationDatasetItem(BaseModel):
-    id: str
-    rows: int
-    columns: int
-    status: str
-    user_id: str
-    collaboration_id: Optional[str]
-    url: str
-    database_name: Optional[str] = None
-
-
-class DatasetStatusResponse(BaseModel):
-    dataset_id: str
-    status: str
-    rows: int
-    columns: int
-    user_id: str
-    collaboration_id: Optional[str]
-    created_at: str
-    updated_at: str
-    progress_info: Optional[str] = None
 
 
 async def process_dataset(dataset_id: str, df: pd.DataFrame, mode: str = "fast"):
@@ -332,7 +277,8 @@ async def upload_dataset(
             dataset_id=dataset_id,
             rows=df.shape[0],
             columns=df.shape[1],
-            status="uploaded"
+            status="uploaded",
+            mode=mode
         )
         
     except Exception as e:
@@ -401,7 +347,9 @@ async def poll_dataset_status(dataset_id: str):
         collaboration_id=dataset.collaborationId,
         created_at=dataset.createdAt.isoformat(),
         updated_at=dataset.updatedAt.isoformat(),
-        progress_info=progress_info
+        progress_info=progress_info,
+        database_name=dataset.databaseName,
+        mode=dataset.mode
     )
 
 
@@ -571,14 +519,14 @@ async def get_cleaning_report_endpoint(dataset_id: str):
     if not report:
         raise HTTPException(status_code=404, detail="Cleaning report not found")
     
-    return {
-        "dataset_id": dataset_id,
-        "mode": dataset.mode,
-        "reasoning": report.reasoning,
-        "summary": report.summary,
-        "recommendations": report.recommendations,
-        "created_at": report.createdAt.isoformat()
-    }
+    return CleaningReportResponse(
+        dataset_id=dataset_id,
+        mode=dataset.mode,
+        reasoning=report.reasoning,
+        summary=report.summary,
+        recommendations=report.recommendations,
+        created_at=report.createdAt.isoformat()
+    )
 
 
 @app.get("/collaboration/{collaboration_id}/graphs", response_model=CollaborationGraphsResponse)
@@ -675,7 +623,9 @@ async def poll_multiple_datasets_status(
             collaboration_id=dataset.collaborationId,
             created_at=dataset.createdAt.isoformat(),
             updated_at=dataset.updatedAt.isoformat(),
-            progress_info=progress_info
+            progress_info=progress_info,
+            database_name=dataset.databaseName,
+            mode=dataset.mode
         ))
     
     return status_responses
@@ -698,6 +648,8 @@ async def list_datasets_endpoint(
                 user_id=ds.userId,
                 collaboration_id=ds.collaborationId,
                 created_at=ds.createdAt.isoformat(),
+                database_name=ds.databaseName,
+                mode=ds.mode
             )
         )
     return items

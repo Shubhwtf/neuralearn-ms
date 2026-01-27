@@ -7,6 +7,7 @@ class DatasetResponse(BaseModel):
     rows: int = Field(..., description="Number of rows in the dataset")
     columns: int = Field(..., description="Number of columns in the dataset")
     status: str = Field(..., description="Processing status: uploaded, processing, completed, or failed")
+    database_name: Optional[str] = Field(None, description="Name of the dataset (extracted from filename or URL)")
     mode: Optional[str] = Field(None, description="Cleaning mode used: fast, smart, or deep")
 
 

@@ -278,6 +278,7 @@ async def upload_dataset(
             rows=df.shape[0],
             columns=df.shape[1],
             status="uploaded",
+            database_name=dataset.databaseName,
             mode=mode
         )
         

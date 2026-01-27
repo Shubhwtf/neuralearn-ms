@@ -278,7 +278,7 @@ async def upload_dataset(
             rows=df.shape[0],
             columns=df.shape[1],
             status="uploaded",
-            database_name=dataset.databaseName,
+            dataset_name=dataset.databaseName,
             mode=mode
         )
         
@@ -349,7 +349,7 @@ async def poll_dataset_status(dataset_id: str):
         created_at=dataset.createdAt.isoformat(),
         updated_at=dataset.updatedAt.isoformat(),
         progress_info=progress_info,
-        database_name=dataset.databaseName,
+        dataset_name=dataset.databaseName,
         mode=dataset.mode
     )
 
@@ -575,7 +575,7 @@ async def get_collaboration_cleaned_datasets(collaboration_id: str, request: Req
                 user_id=ds.userId,
                 collaboration_id=ds.collaborationId,
                 url=dataset_url,
-                database_name=ds.databaseName,
+                dataset_name=ds.databaseName,
             )
         )
     return cleaned
@@ -625,7 +625,7 @@ async def poll_multiple_datasets_status(
             created_at=dataset.createdAt.isoformat(),
             updated_at=dataset.updatedAt.isoformat(),
             progress_info=progress_info,
-            database_name=dataset.databaseName,
+            dataset_name=dataset.databaseName,
             mode=dataset.mode
         ))
     
@@ -649,7 +649,7 @@ async def list_datasets_endpoint(
                 user_id=ds.userId,
                 collaboration_id=ds.collaborationId,
                 created_at=ds.createdAt.isoformat(),
-                database_name=ds.databaseName,
+                dataset_name=ds.databaseName,
                 mode=ds.mode
             )
         )

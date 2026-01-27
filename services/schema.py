@@ -7,7 +7,7 @@ class DatasetResponse(BaseModel):
     rows: int = Field(..., description="Number of rows in the dataset")
     columns: int = Field(..., description="Number of columns in the dataset")
     status: str = Field(..., description="Processing status: uploaded, processing, completed, or failed")
-    database_name: Optional[str] = Field(None, description="Name of the dataset (extracted from filename or URL)")
+    dataset_name: Optional[str] = Field(None, description="Name of the dataset (extracted from filename or URL)")
     mode: Optional[str] = Field(None, description="Cleaning mode used: fast, smart, or deep")
 
 
@@ -19,7 +19,7 @@ class DatasetItem(BaseModel):
     user_id: str = Field(..., description="User who uploaded the dataset")
     collaboration_id: Optional[str] = Field(None, description="Collaboration group ID if applicable")
     created_at: str = Field(..., description="ISO timestamp of when dataset was created")
-    database_name: Optional[str] = Field(None, description="Name of the dataset (extracted from filename)")
+    dataset_name: Optional[str] = Field(None, description="Name of the dataset (extracted from filename)")
     mode: Optional[str] = Field(None, description="Cleaning mode used: fast, smart, or deep")
 
 
@@ -57,7 +57,7 @@ class CollaborationDatasetItem(BaseModel):
     user_id: str = Field(..., description="User who uploaded the dataset")
     collaboration_id: Optional[str] = Field(None, description="Collaboration group ID")
     url: str = Field(..., description="URL to download the cleaned dataset")
-    database_name: Optional[str] = Field(None, description="Name of the dataset")
+    dataset_name: Optional[str] = Field(None, description="Name of the dataset")
 
 
 class DatasetStatusResponse(BaseModel):
@@ -70,7 +70,7 @@ class DatasetStatusResponse(BaseModel):
     created_at: str = Field(..., description="ISO timestamp of creation")
     updated_at: str = Field(..., description="ISO timestamp of last update")
     progress_info: Optional[str] = Field(None, description="Human-readable progress information")
-    database_name: Optional[str] = Field(None, description="Name of the dataset")
+    dataset_name: Optional[str] = Field(None, description="Name of the dataset")
     mode: Optional[str] = Field(None, description="Cleaning mode used")
 
 

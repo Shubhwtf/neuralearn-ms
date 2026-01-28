@@ -6,12 +6,16 @@ import pandas as pd
 import uuid
 import os
 from pathlib import Path
+from typing import Optional as TypingOptional
+
+from rq import Retry
 
 from services.data_loader import DataLoader
 from services.cleaner import DataCleaner
 from services.eda import EDAService
 from services.outliers import OutlierService
 from services.feature_engineering import FeatureEngineeringService
+from services.queue import get_queue
 from services.schema import (
     DatasetResponse,
     DatasetItem,
@@ -74,14 +78,49 @@ async def shutdown():
     await disconnect_db()
 
 
-async def process_dataset(dataset_id: str, df: pd.DataFrame, mode: str = "fast"):
+async def _load_dataset_dataframe(dataset_id: str) -> pd.DataFrame:
+    """
+    Load the raw dataset for a given dataset_id from storage or URL.
+
+    This is used by both the in-process background task and the Redis/RQ worker job.
+    """
+    dataset = await get_dataset(dataset_id)
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found while processing")
+
+    df: TypingOptional[pd.DataFrame] = None
+
+    # Prefer loading from URL if available
+    if getattr(dataset, "rawUrl", None):
+        try:
+            df = await data_loader.load_from_url(dataset.rawUrl)
+        except Exception:
+            df = None
+
+    # Fallback to local raw data path
+    if df is None and getattr(dataset, "rawDataPath", None) and os.path.exists(
+        dataset.rawDataPath
+    ):
+        df = data_loader.load_saved_dataset(dataset.rawDataPath)
+
+    if df is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Raw dataset could not be loaded for processing",
+        )
+
+    return df
+
+
+async def process_dataset(dataset_id: str, mode: str = "fast"):
     try:
         await update_dataset(dataset_id, status="processing")
-        
         dataset = await get_dataset(dataset_id)
         if not dataset:
             return
-        
+
+        df = await _load_dataset_dataframe(dataset_id)
+
         cleaner = DataCleaner(mode=mode)
         df_cleaned = cleaner.handle_missing_values(df)
         
@@ -192,7 +231,7 @@ async def process_dataset(dataset_id: str, df: pd.DataFrame, mode: str = "fast")
 
 @app.post("/dataset/upload", response_model=DatasetResponse)
 async def upload_dataset(
-    background_tasks: BackgroundTasks,
+        background_tasks: BackgroundTasks,
     file: Optional[UploadFile] = File(None),
     dataset_url: Optional[str] = None,
     user_id: str = "anonymous",
@@ -270,9 +309,39 @@ async def upload_dataset(
             rawDataPath=raw_path,
             rawUrl=None,
         )
-        
-        background_tasks.add_task(process_dataset, dataset_id, df, mode)
-        
+
+        # Choose queue name based on mode so heavy "deep" jobs
+        # don't starve lighter ones.
+        if mode == "deep":
+            queue_name = "eda_deep"
+            timeout = 60 * 30  # 30 minutes
+        else:
+            queue_name = "eda_fast"
+            timeout = 60 * 10  # 10 minutes
+
+        # Enqueue processing via Redis/RQ if Redis is configured, otherwise
+        # fall back to FastAPI in-process background task.
+        try:
+            queue = get_queue(queue_name)
+            # Use dataset_id as job_id so jobs are idempotent per dataset
+            queue.enqueue(
+                "jobs.eda_worker.process_dataset_job",
+                dataset_id,
+                mode,
+                job_id=str(dataset_id),
+                description=f"Process dataset {dataset_id} in {mode} mode",
+                timeout=timeout,
+                result_ttl=0,           # don't persist successful results
+                failure_ttl=60 * 60*24, # keep failures for 1 day
+                retry=Retry(
+                    max=3,
+                    interval=[60, 120, 300],  # backoff: 1m, 2m, 5m
+                ),
+            )
+        except Exception:
+            # If Redis is not available or enqueuing fails, we still don't want
+            # to break the upload flow – use the in-process background task.
+            background_tasks.add_task(process_dataset, dataset_id, mode)
         return DatasetResponse(
             dataset_id=dataset_id,
             rows=df.shape[0],

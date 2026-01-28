@@ -5,6 +5,8 @@ A comprehensive FastAPI-based microservice for automated data processing, cleani
 ## 🚀 Features
 
 - **Automated Data Processing Pipeline**: Upload datasets and get them automatically cleaned, analyzed, and feature-engineered
+- **Redis-Based Job Queue**: Scalable background job processing with Redis and RQ for horizontal scaling
+- **Automatic Worker Scaling**: Built-in autoscaler that adjusts worker count based on queue length
 - **Multiple Cleaning Modes**: Choose from fast (basic), smart (limited AI), or deep (comprehensive AI) cleaning modes
 - **AI-Powered Data Cleaning**: Uses Google Gemini API for intelligent missing value handling strategies
 - **Detailed Cleaning Reports**: Deep mode provides comprehensive reports with reasoning, examples, and recommendations
@@ -15,6 +17,7 @@ A comprehensive FastAPI-based microservice for automated data processing, cleani
 - **Database Logging**: PostgreSQL database for tracking all processing steps and metadata
 - **Collaboration Support**: Multi-user collaboration features with shared datasets
 - **RESTful API**: Complete REST API with automatic documentation
+- **Real-time Monitoring**: Queue monitoring tools for tracking job processing and system health
 
 ## 🏗️ Architecture
 
@@ -29,16 +32,46 @@ A comprehensive FastAPI-based microservice for automated data processing, cleani
 │   ├── outliers.py        # Outlier detection and handling
 │   ├── feature_engineering.py # Feature engineering with AI
 │   ├── gemini_client.py   # Google Gemini API integration
+│   ├── queue.py           # Redis queue management
 │   └── schema.py          # Pydantic models for API responses
+├── jobs/                  # Background job workers
+│   └── eda_worker.py      # EDA processing worker function
+├── scripts/               # Utility scripts
+│   ├── autoscaler.py      # Automatic worker scaling
+│   ├── monitor_redis.py   # Queue monitoring
+│   ├── load_test.py       # Load testing tool
+│   └── check_redis.sh     # Redis health check
 └── storage/               # Local file storage
     ├── datasets/          # Raw and cleaned datasets
     └── graphs/            # Generated EDA visualizations
+```
+
+### Queue Architecture
+
+```
+API Server (FastAPI)
+    ↓
+Redis Queue (RQ)
+    ├── eda_fast (fast/smart mode jobs)
+    └── eda_deep (deep mode jobs)
+        ↓
+Workers (RQ Workers)
+    ├── Worker 1 (eda_fast)
+    ├── Worker 2 (eda_fast)
+    └── Worker N (auto-scaled)
+        ↓
+Processing Pipeline
+    ├── Data Cleaning
+    ├── EDA Generation
+    ├── Outlier Detection
+    └── Feature Engineering
 ```
 
 ## 📋 Requirements
 
 - Python 3.8+
 - PostgreSQL database
+- Redis server (for job queue)
 - AWS S3 bucket (optional, for cloud storage)
 - Google Gemini API key (optional, for AI features)
 
@@ -67,6 +100,9 @@ Create a `.env` file with the following variables:
 # Database
 DATABASE_URL=postgresql://username:password@host:port/database
 
+# Redis (for job queue)
+REDIS_URL=redis://localhost:6379/0
+
 # Google Gemini API (optional)
 GEMINI_API_KEY=your_gemini_api_key
 
@@ -77,12 +113,45 @@ AWS_REGION=your_region
 S3_BUCKET_NAME=your_bucket_name
 ```
 
-5. **Run the application**
+5. **Start Redis**
+```bash
+# Using Docker (recommended)
+docker run --name redis -p 6379:6379 -d redis:7-alpine
+
+# Or using system Redis
+sudo systemctl start redis-server  # Ubuntu/Debian
+brew services start redis          # macOS
+```
+
+6. **Start the API server**
 ```bash
 uvicorn main:app --reload
 ```
 
 The API will be available at `http://localhost:8000`
+
+7. **Start workers** (choose one option)
+
+**Option A: Manual Workers**
+```bash
+# Terminal 1: Fast queue worker
+rq worker eda_fast
+
+# Terminal 2: Deep queue worker (optional)
+rq worker eda_deep
+```
+
+**Option B: Autoscaler (Recommended)**
+```bash
+# Automatically manages workers based on queue length
+python scripts/autoscaler.py
+```
+
+The autoscaler will:
+- Maintain minimum workers (1 for `eda_fast`, 0 for `eda_deep`)
+- Scale up when queue > 50 jobs
+- Scale down when queue < 10 jobs
+- Manage worker processes automatically
 
 ## 📚 API Documentation
 
@@ -186,15 +255,26 @@ GET /collaboration/{collaboration_id}/datasets/cleaned  # All cleaned datasets (
 1. **Upload**: Dataset uploaded via file or URL with selected cleaning mode
 2. **Validation**: Size and format validation (max 100K rows, 100 columns)
 3. **Storage**: Raw data saved locally and optionally to S3
-4. **Cleaning**: Mode-specific missing value handling
-   - **Fast**: Heuristic-based cleaning (mean, median, mode, forward-fill)
-   - **Smart**: Limited AI assistance for columns with >20% nulls (up to 3 Gemini calls)
-   - **Deep**: Full AI reasoning for top 3 columns with >10% nulls (1 Gemini call with detailed report)
-5. **EDA**: Automatic generation of visualizations and statistics
-6. **Outlier Detection**: IQR/Z-score based outlier detection and fixing
-7. **Feature Engineering**: Categorical encoding, scaling, derived features
-8. **Report Generation**: Deep mode generates comprehensive cleaning report
-9. **Completion**: Cleaned dataset and metadata available for download
+4. **Job Enqueueing**: Processing job added to Redis queue (`eda_fast` or `eda_deep`)
+5. **Background Processing** (handled by workers):
+   - **Cleaning**: Mode-specific missing value handling
+     - **Fast**: Heuristic-based cleaning (mean, median, mode, forward-fill)
+     - **Smart**: Limited AI assistance for columns with >20% nulls (up to 3 Gemini calls)
+     - **Deep**: Full AI reasoning for top 3 columns with >10% nulls (1 Gemini call with detailed report)
+   - **EDA**: Automatic generation of visualizations and statistics
+   - **Outlier Detection**: IQR/Z-score based outlier detection and fixing
+   - **Feature Engineering**: Categorical encoding, scaling, derived features
+   - **Report Generation**: Deep mode generates comprehensive cleaning report
+6. **Completion**: Cleaned dataset and metadata available for download
+
+### Queue Processing
+
+- Jobs are automatically routed to appropriate queues:
+  - `eda_fast`: Fast and smart mode jobs (10-minute timeout)
+  - `eda_deep`: Deep mode jobs (30-minute timeout)
+- Workers process jobs asynchronously
+- Status updates are tracked in the database
+- Failed jobs are retried automatically (up to 3 times with exponential backoff)
 
 ## 🤖 AI-Powered Features
 
@@ -247,13 +327,60 @@ GET /collaboration/{collaboration_id}/datasets/cleaned  # All cleaned datasets (
 
 ## 🚀 Deployment
 
+### Quick Start Script
+
+Use the provided startup script:
+```bash
+./scripts/start_all.sh
+```
+
+This will:
+- Start Redis if not running
+- Provide instructions for starting API and workers
+
 ### Heroku Deployment
 The project includes a `Procfile` for Heroku deployment:
 ```
 web: uvicorn main:app --host 0.0.0.0 --port $PORT
 ```
 
+**Note**: For Heroku, you'll need:
+- Redis addon (e.g., Heroku Redis)
+- Worker dynos for processing jobs
+- Set `REDIS_URL` environment variable
+
 ### Docker Deployment
+
+**Docker Compose Example:**
+```yaml
+version: '3.8'
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+  
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+  
+  worker:
+    build: .
+    command: rq worker eda_fast eda_deep
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+    deploy:
+      replicas: 3  # Scale workers
+```
+
+**Dockerfile:**
 ```dockerfile
 FROM python:3.9-slim
 WORKDIR /app
@@ -262,6 +389,13 @@ RUN pip install -r requirements.txt
 COPY . .
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
+
+### Production Considerations
+
+- **Redis**: Use managed Redis (AWS ElastiCache, Redis Cloud, etc.)
+- **Workers**: Use process managers (systemd, supervisor) or orchestration (Kubernetes, Docker Swarm)
+- **Monitoring**: Set up alerts for queue length and worker health
+- **Scaling**: Use autoscaler or orchestration tools for automatic scaling
 
 ## 🔧 Configuration
 
@@ -273,11 +407,26 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
   - Smart mode: 3 calls per user
   - Deep mode: 1 call per user
 
+### Queue Configuration
+- **Queue Names**: `eda_fast` (fast/smart), `eda_deep` (deep)
+- **Job Timeouts**: 
+  - Fast/Smart: 10 minutes
+  - Deep: 30 minutes
+- **Retry Policy**: Up to 3 retries with exponential backoff (1m, 2m, 5m)
+- **Result TTL**: 0 (results discarded immediately to save memory)
+- **Failure TTL**: 24 hours (failed jobs kept for debugging)
+
 ### Storage Configuration
 - Local storage: `storage/` directory
 - S3 integration: Optional, configured via environment variables
 - File cleanup: Automatic cleanup of temporary files
 - **S3 Configuration**: Requires Signature Version 4 (automatically configured)
+
+### Worker Configuration
+- **Minimum Workers**: 1 for `eda_fast`, 0 for `eda_deep`
+- **Maximum Workers**: Configurable (default: 20 for fast, 5 for deep)
+- **Autoscaling**: Enabled by default with autoscaler script
+- **Worker Isolation**: Each worker runs in separate process
 
 ## 🧪 Testing
 
@@ -314,10 +463,57 @@ curl "http://localhost:8000/dataset/{dataset_id}/report"
 
 ## 📊 Monitoring & Logging
 
-- Processing status tracking in database
-- Comprehensive logging of all operations
-- Error handling with detailed error messages
-- Background task processing for large datasets
+### Queue Monitoring
+
+**Real-time Queue Monitoring:**
+```bash
+# Continuous monitoring (updates every 5 seconds)
+python scripts/monitor_redis.py --watch
+
+# One-time check
+python scripts/monitor_redis.py
+```
+
+**Quick Redis Check:**
+```bash
+./scripts/check_redis.sh
+```
+
+**Check Job Status:**
+```bash
+# Check database status of datasets
+python scripts/check_job_status.py
+```
+
+### Monitoring Features
+
+- **Queue Statistics**: Jobs queued, started, finished, failed per queue
+- **Worker Information**: Active workers, their queues, current jobs
+- **Redis Server Metrics**: Memory usage, connection count, cache hit rate
+- **Processing Status**: Track dataset status via API endpoints
+- **Comprehensive Logging**: All operations logged to database
+
+### Load Testing
+
+Test the queue system at scale:
+```bash
+# Basic load test (50 datasets, 10 concurrent)
+python scripts/load_test.py
+
+# Large scale test
+python scripts/load_test.py --num 200 --concurrent 30 --mode fast
+```
+
+### Autoscaler Configuration
+
+Customize autoscaling behavior:
+```bash
+# More aggressive scaling
+python scripts/autoscaler.py --scale-up 30 --scale-down 5 --workers-per-scale 2
+
+# Conservative scaling
+python scripts/autoscaler.py --scale-up 100 --scale-down 20 --interval 15
+```
 
 ## 🤝 Contributing
 
@@ -357,12 +553,60 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## 🆘 Support
+## 🎯 Queue System Benefits
+
+### Scalability
+- **Horizontal Scaling**: Add more workers to increase throughput
+- **Load Distribution**: Jobs distributed across multiple workers
+- **Queue Isolation**: Fast jobs don't block deep jobs (separate queues)
+
+### Reliability
+- **Job Persistence**: Jobs survive worker restarts (stored in Redis)
+- **Automatic Retries**: Failed jobs retry with exponential backoff
+- **Failure Tracking**: Failed jobs logged for debugging
+
+### Performance
+- **Non-blocking API**: API responds immediately after enqueueing
+- **Parallel Processing**: Multiple workers process jobs concurrently
+- **Resource Management**: Workers can be scaled based on load
+
+### Monitoring
+- **Real-time Visibility**: Monitor queue lengths and worker status
+- **Performance Metrics**: Track processing times and throughput
+- **Health Checks**: Monitor Redis and worker health
+
+## 🆘 Support & Troubleshooting
+
+### Common Issues
+
+**Jobs not processing:**
+- Check Redis is running: `redis-cli ping`
+- Verify workers are running: `python scripts/monitor_redis.py`
+- Check worker logs for errors
+
+**Queue growing too fast:**
+- Add more workers: `rq worker eda_fast` (multiple terminals)
+- Or use autoscaler: `python scripts/autoscaler.py`
+- Check job processing time (may need optimization)
+
+**Redis connection errors:**
+- Verify Redis is running: `docker ps | grep redis`
+- Check `REDIS_URL` in `.env` matches Redis location
+- Test connection: `redis-cli -u $REDIS_URL ping`
+
+**Workers not scaling:**
+- Check autoscaler is running
+- Verify queue thresholds are appropriate
+- Check worker logs for startup errors
+
+### Getting Help
 
 For issues and questions:
 1. Check the API documentation at `/docs`
 2. Review the processing logs via API endpoints
 3. Check database logs for detailed error information
+4. Monitor queues: `python scripts/monitor_redis.py --watch`
+5. Check job status: `python scripts/check_job_status.py`
 
 ---
 

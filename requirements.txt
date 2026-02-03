@@ -18,3 +18,4 @@ redis==5.0.8
 rq==1.16.2
 aiohttp==3.9.1
 PyJWT==2.8.0
+structlog==24.1.0

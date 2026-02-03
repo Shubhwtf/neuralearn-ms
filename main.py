@@ -17,6 +17,7 @@ from services.eda import EDAService
 from services.outliers import OutlierService
 from services.feature_engineering import FeatureEngineeringService
 from services.queue import get_queue
+import structlog
 from services.schema import (
     DatasetResponse,
     DatasetItem,
@@ -57,6 +58,7 @@ from middleware.rate_limit import (
     add_rate_limit_headers,
     RateLimitInfo,
 )
+logger = structlog.get_logger()
 
 app = FastAPI(title="NeuraLearn microservices api", version="1.0.0")
 
@@ -144,27 +146,33 @@ async def _load_dataset_dataframe(dataset_id: str) -> pd.DataFrame:
 
 
 async def process_dataset(dataset_id: str, mode: str = "fast"):
+    log = logger.bind(dataset_id=dataset_id, mode=mode)
     try:
+        log.info("processing_started")
         await update_dataset(dataset_id, status="processing")
         dataset = await get_dataset(dataset_id)
         if not dataset:
+            log.warning("dataset_not_found_during_processing")
             return
 
         df = await _load_dataset_dataframe(dataset_id)
+        log.info("dataset_loaded", rows=df.shape[0], columns=df.shape[1])
 
         cleaner = DataCleaner(mode=mode)
         df_cleaned = cleaner.handle_missing_values(df)
+        log.info("cleaning_completed", logs_count=len(cleaner.get_cleaning_logs()))
         
-        for log in cleaner.get_cleaning_logs():
+        for cleaning_log in cleaner.get_cleaning_logs():
             await create_cleaning_log(
                 dataset_id=dataset_id,
-                column=log["column"],
-                null_count=log["null_count"],
-                action=log["action"],
-                reason=log["reason"]
+                column=cleaning_log["column"],
+                null_count=cleaning_log["null_count"],
+                action=cleaning_log["action"],
+                reason=cleaning_log["reason"]
             )
         
         eda_results = eda_service.generate_all_eda(df_cleaned, dataset_id)
+        log.info("eda_generated", graphs_count=len(eda_results["graphs"]))
 
         for graph in eda_results["graphs"]:
             local_path = graph["file_path"]
@@ -184,28 +192,31 @@ async def process_dataset(dataset_id: str, mode: str = "fast"):
             method="IQR", 
             fix_strategy="cap"
         )
+        log.info("outliers_processed", logs_count=len(outlier_service.get_outlier_logs()))
         
-        for log in outlier_service.get_outlier_logs():
+        for outlier_log in outlier_service.get_outlier_logs():
             await create_outlier_log(
                 dataset_id=dataset_id,
-                column=log["column"],
-                outlier_count=log["outlier_count"],
-                method=log["method"],
-                action=log["action"]
+                column=outlier_log["column"],
+                outlier_count=outlier_log["outlier_count"],
+                method=outlier_log["method"],
+                action=outlier_log["action"]
             )
         
         feature_service = FeatureEngineeringService()
         df_final = feature_service.apply_feature_engineering(df_cleaned)
+        log.info("feature_engineering_completed", logs_count=len(feature_service.get_feature_logs()))
         
-        for log in feature_service.get_feature_logs():
+        for feature_log in feature_service.get_feature_logs():
             await create_feature_log(
                 dataset_id=dataset_id,
-                action=log["action"],
-                details=log["details"]
+                action=feature_log["action"],
+                details=feature_log["details"]
             )
         
         if mode == "deep" and cleaner.gemini:
             try:
+                log.info("generating_deep_report")
                 sample_df = cleaner.get_sample_dataframe()
                 if sample_df is not None and len(cleaner.get_cleaning_logs()) > 0:
                     report = cleaner.gemini.get_deep_cleaning_report(
@@ -228,8 +239,10 @@ async def process_dataset(dataset_id: str, mode: str = "fast"):
                             summary=report["summary"],
                             recommendations=recommendations
                         )
+                        log.info("deep_report_generated")
             except Exception as e:
                 error_str = str(e)
+                log.error("deep_report_generation_failed", error=error_str)
                 if "quota" in error_str.lower() or "429" in error_str or "rate limit" in error_str.lower():
                     print(f"Gemini quota exhausted, skipping report generation: {e}")
                 else:
@@ -255,7 +268,19 @@ async def process_dataset(dataset_id: str, mode: str = "fast"):
             columns=df_final.shape[1]
         )
         
+        log.info("processing_completed_success")
+
+        # clean up local files if they were used
+        if os.path.exists(cleaned_path):
+            os.remove(cleaned_path)
+            
+        for graph in eda_results["graphs"]:
+            local_path = graph["file_path"]
+            if os.path.exists(local_path):
+                os.remove(local_path)
+        
     except Exception as e:
+        log.error("processing_failed_error", exc_info=True)
         await update_dataset(dataset_id, status="failed")
         raise
 
@@ -371,6 +396,7 @@ async def upload_dataset(
                     interval=[60, 120, 300],  # backoff: 1m, 2m, 5m
                 ),
             )
+            logger.info("job_enqueued", dataset_id=dataset_id, mode=mode, queue=queue_name)
         except Exception:
             # If Redis is not available or enqueuing fails, we still don't want
             # to break the upload flow – use the in-process background task.

@@ -105,3 +105,17 @@ def generate_presigned_url(
         return None
 
 
+
+def delete_file(key: str) -> bool:
+    if not _is_s3_configured():
+        return False
+
+    s3 = _get_s3_client()
+    if s3 is None:
+        return False
+
+    try:
+        s3.delete_object(Bucket=S3_BUCKET_NAME, Key=key)
+        return True
+    except (BotoCoreError, ClientError, Exception):
+        return False

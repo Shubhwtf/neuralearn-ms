@@ -30,7 +30,7 @@ from services.schema import (
     DatasetStatusResponse,
     CleaningReportResponse,
 )
-from s3_client import upload_file_and_get_key, generate_presigned_url
+from s3_client import upload_file_and_get_key, generate_presigned_url, delete_file
 from database import (
     connect_db,
     disconnect_db,
@@ -130,11 +130,19 @@ async def _load_dataset_dataframe(dataset_id: str) -> pd.DataFrame:
         except Exception:
             df = None
 
-    # Fallback to local raw data path
-    if df is None and getattr(dataset, "rawDataPath", None) and os.path.exists(
-        dataset.rawDataPath
-    ):
-        df = data_loader.load_saved_dataset(dataset.rawDataPath)
+    # Fallback to local raw data path or S3 key
+    raw_path = getattr(dataset, "rawDataPath", None)
+    if df is None and raw_path:
+        if os.path.exists(raw_path):
+             df = data_loader.load_saved_dataset(raw_path)
+        else:
+            # Assume it is an S3 key
+            s3_url = generate_presigned_url(raw_path)
+            if s3_url:
+                try:
+                    df = await data_loader.load_from_url(s3_url)
+                except Exception:
+                    df = None
 
     if df is None:
         raise HTTPException(
@@ -147,6 +155,7 @@ async def _load_dataset_dataframe(dataset_id: str) -> pd.DataFrame:
 
 async def process_dataset(dataset_id: str, mode: str = "fast"):
     log = logger.bind(dataset_id=dataset_id, mode=mode)
+    files_to_clean = []
     try:
         log.info("processing_started")
         await update_dataset(dataset_id, status="processing")
@@ -176,8 +185,12 @@ async def process_dataset(dataset_id: str, mode: str = "fast"):
 
         for graph in eda_results["graphs"]:
             local_path = graph["file_path"]
+            files_to_clean.append(local_path)
             s3_key = f"graphs/{dataset_id}/{os.path.basename(local_path)}"
-            stored_key = upload_file_and_get_key(local_path, s3_key) or local_path
+            stored_key = upload_file_and_get_key(local_path, s3_key, delete_local=False)
+            
+            if not stored_key:
+                 raise Exception(f"Failed to upload graph to S3: {local_path}")
 
             await create_graph_metadata(
                 dataset_id=dataset_id,
@@ -255,14 +268,19 @@ async def process_dataset(dataset_id: str, mode: str = "fast"):
                     )
         
         cleaned_path = data_loader.save_cleaned_dataset(df_final, dataset_id)
+        files_to_clean.append(cleaned_path)
 
         cleaned_s3_key = f"datasets/{dataset_id}/cleaned.csv"
-        cleaned_key = upload_file_and_get_key(cleaned_path, cleaned_s3_key)
+        # Using delete_local=False so we can handle cleanup in finally
+        cleaned_key = upload_file_and_get_key(cleaned_path, cleaned_s3_key, delete_local=False)
         
+        if not cleaned_key:
+             raise Exception("Failed to upload cleaned dataset to S3")
+
         await update_dataset(
             dataset_id,
             status="completed",
-            cleanedDataPath=None if cleaned_key else cleaned_path,
+            cleanedDataPath=None, # Cleaned path is strictly S3 now
             cleanedUrl=cleaned_key,
             rows=df_final.shape[0],
             columns=df_final.shape[1]
@@ -270,19 +288,58 @@ async def process_dataset(dataset_id: str, mode: str = "fast"):
         
         log.info("processing_completed_success")
 
-        # clean up local files if they were used
-        if os.path.exists(cleaned_path):
-            os.remove(cleaned_path)
-            
-        for graph in eda_results["graphs"]:
-            local_path = graph["file_path"]
-            if os.path.exists(local_path):
-                os.remove(local_path)
-        
     except Exception as e:
         log.error("processing_failed_error", exc_info=True)
         await update_dataset(dataset_id, status="failed")
+
+        # Attempt cleanup of raw dataset even on failure
+        try:
+             dataset = await get_dataset(dataset_id)
+             if dataset and dataset.rawDataPath and not os.path.exists(dataset.rawDataPath):
+                 delete_file(dataset.rawDataPath)
+        except Exception:
+             pass
+
         raise
+    
+    finally:
+        # Robust local cleanup using glob patterns
+        # We clean EVERYTHING related to this dataset_id in storage directories
+        # This catches graphs, summary stats, raw/cleaned csvs, etc.
+        try:
+             patterns = [
+                 # Dataset files (raw, cleaned)
+                 f"storage/datasets/{dataset_id}_*",
+                 # Graphs & Stats (png, json)
+                 f"storage/graphs/{dataset_id}_*",
+             ]
+             
+             import glob
+             files_to_remove = []
+             for pattern in patterns:
+                 files_to_remove.extend(glob.glob(pattern))
+             
+             # Also include specific files tracked (though likely covered by glob)
+             files_to_remove.extend(files_to_clean)
+             
+             # Deduplicate
+             files_to_remove = list(set(files_to_remove))
+
+             for path in files_to_remove:
+                 if os.path.exists(path):
+                     try:
+                         os.remove(path)
+                     except OSError:
+                         log.warning("failed_to_clean_local_file", path=path)
+        except Exception as e:
+             log.error("cleanup_routine_failed", error=str(e))
+        
+        try:
+             if 'dataset' in locals() and dataset and dataset.rawDataPath:
+                 if not os.path.exists(dataset.rawDataPath): # Valid S3 key check (naive but consistent with rest)
+                     delete_file(dataset.rawDataPath)
+        except Exception:
+             pass
 
 
 @app.post("/dataset/upload", response_model=DatasetResponse)
@@ -361,10 +418,23 @@ async def upload_dataset(
         
         await create_user_mode_usage(user_id=user_id, mode=mode, dataset_id=dataset_id)
         
-        raw_path = data_loader.save_raw_dataset(df, dataset_id)
+        # Save raw dataset to S3
+        temp_raw_path = data_loader.save_raw_dataset(df, dataset_id)
+        s3_raw_key = f"datasets/{dataset_id}/raw.csv"
+        raw_key = upload_file_and_get_key(temp_raw_path, s3_raw_key)
+        
+        # Cleanup local temp file unconditionally
+        if os.path.exists(temp_raw_path):
+            os.remove(temp_raw_path)
+
+        # If upload failed, fail the request
+        if not raw_key:
+             await update_dataset(dataset_id, status="failed")
+             raise HTTPException(status_code=500, detail="Failed to upload raw dataset to S3")
+
         await update_dataset(
             dataset_id,
-            rawDataPath=raw_path,
+            rawDataPath=raw_key,
             rawUrl=None,
         )
 

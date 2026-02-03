@@ -15,6 +15,9 @@ worker-fast)
 worker-deep)
   exec uv run rq worker eda_deep
   ;;
+worker-all)
+  exec uv run python scripts/worker_manager.py
+  ;;
 *)
   echo "[!] Unknown ROLE=$ROLE"
   exit 1

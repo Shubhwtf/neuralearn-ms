@@ -1511,6 +1511,7 @@ dependencies = [
     { name = "numpy" },
     { name = "pandas" },
     { name = "pydantic" },
+    { name = "pyjwt" },
     { name = "python-dotenv" },
     { name = "python-multipart" },
     { name = "redis" },
@@ -1534,6 +1535,7 @@ requires-dist = [
     { name = "numpy", specifier = "==1.26.2" },
     { name = "pandas", specifier = "==2.1.3" },
     { name = "pydantic", specifier = "==2.5.2" },
+    { name = "pyjwt", specifier = ">=2.11.0" },
     { name = "python-dotenv", specifier = "==1.0.0" },
     { name = "python-multipart", specifier = "==0.0.6" },
     { name = "redis", specifier = "==5.0.8" },
@@ -1954,6 +1956,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/0b/32/0a6ee79ed34e8934a54548495883017dfaf3fc742b0d0d02afa154f1f49d/pydantic_core-2.14.5-pp310-pypy310_pp73-musllinux_1_1_aarch64.whl", hash = "sha256:2d0ae0d8670164e10accbeb31d5ad45adb71292032d0fdb9079912907f0085f4", size = 2000022, upload-time = "2023-11-22T13:05:35.022Z" },
     { url = "https://files.pythonhosted.org/packages/fb/84/f7e4556343ea0a483fa4e18505efaf10002581d2e980867a5b1ed22bfd21/pydantic_core-2.14.5-pp310-pypy310_pp73-musllinux_1_1_x86_64.whl", hash = "sha256:d37f8ec982ead9ba0a22a996129594938138a1503237b87318392a48882d50b7", size = 2130197, upload-time = "2023-11-22T13:05:37.488Z" },
     { url = "https://files.pythonhosted.org/packages/dc/1b/eb3861748a1669865f7b01dd73dedc185f1e2dad84c56a0fd00672e7fac8/pydantic_core-2.14.5-pp310-pypy310_pp73-win_amd64.whl", hash = "sha256:35613015f0ba7e14c29ac6c2483a657ec740e5ac5758d993fdd5870b07a61d8b", size = 1991642, upload-time = "2023-11-22T13:05:40.365Z" },
+]
+
+[[package]]
+name = "pyjwt"
+version = "2.11.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5c/5a/b46fa56bf322901eee5b0454a34343cdbdae202cd421775a8ee4e42fd519/pyjwt-2.11.0.tar.gz", hash = "sha256:35f95c1f0fbe5d5ba6e43f00271c275f7a1a4db1dab27bf708073b75318ea623", size = 98019, upload-time = "2026-01-30T19:59:55.694Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6f/01/c26ce75ba460d5cd503da9e13b21a33804d38c2165dec7b716d06b13010c/pyjwt-2.11.0-py3-none-any.whl", hash = "sha256:94a6bde30eb5c8e04fee991062b534071fd1439ef58d2adc9ccb823e7bcd0469", size = 28224, upload-time = "2026-01-30T19:59:54.539Z" },
 ]
 
 [[package]]

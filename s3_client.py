@@ -18,6 +18,7 @@ AWS_REGION = _get_env_var("AWS_REGION")
 AWS_ACCESS_KEY_ID = _get_env_var("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = _get_env_var("AWS_SECRET_ACCESS_KEY")
 S3_BUCKET_NAME = _get_env_var("S3_BUCKET_NAME")
+S3_LOCATION_PREFIX = _get_env_var("S3_LOCATION_PREFIX") or "eda-ms"
 
 _s3_client: Optional[boto3.client] = None
 
@@ -67,6 +68,9 @@ def upload_file_and_get_key(
     try:
         if not os.path.exists(local_path):
             return None
+
+        if not key.startswith(f"{S3_LOCATION_PREFIX}/"):
+            key = f"{S3_LOCATION_PREFIX}/{key}"
         
         s3.upload_file(local_path, S3_BUCKET_NAME, key)
         if delete_local and os.path.exists(local_path):
